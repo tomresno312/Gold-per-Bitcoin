@@ -1,258 +1,232 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-
-const RAW = [
-  ["2013-01",13,1660],["2013-04",140,1470],["2013-07",90,1290],["2013-10",200,1320],["2013-12",750,1220],
-  ["2014-01",800,1250],["2014-04",450,1300],["2014-07",620,1310],["2014-10",340,1220],["2014-12",320,1200],
-  ["2015-01",220,1260],["2015-04",240,1200],["2015-07",280,1100],["2015-10",270,1140],["2015-12",430,1060],
-  ["2016-01",380,1110],["2016-04",420,1240],["2016-07",650,1340],["2016-10",610,1270],["2016-12",960,1150],
-  ["2017-01",1000,1210],["2017-04",1350,1270],["2017-07",2500,1250],["2017-10",6000,1280],["2017-12",14000,1300],
-  ["2018-01",10000,1340],["2018-04",7000,1330],["2018-07",7500,1240],["2018-10",6500,1230],["2018-12",3700,1280],
-  ["2019-01",3500,1290],["2019-04",5300,1290],["2019-07",10000,1420],["2019-10",8300,1510],["2019-12",7200,1520],
-  ["2020-01",9400,1580],["2020-04",6800,1690],["2020-07",11300,1970],["2020-10",13800,1900],["2020-12",29000,1890],
-  ["2021-01",33000,1860],["2021-04",58000,1770],["2021-07",35000,1810],["2021-10",61000,1780],["2021-11",65000,1790],
-  ["2022-01",38000,1800],["2022-04",40000,1940],["2022-07",23000,1730],["2022-10",19500,1640],["2022-12",16500,1800],
-  ["2023-01",23000,1930],["2023-04",29000,2000],["2023-07",30000,1960],["2023-10",34000,1990],["2023-12",42000,2060],
-  ["2024-01",43000,2040],["2024-04",64000,2340],["2024-07",58000,2420],["2024-10",69000,2750],["2024-12",95000,2640],
-  ["2025-01",100000,2750],["2025-04",84000,3100],["2025-07",105000,3200],["2025-10",126000,3400],
-  ["2026-01",85000,4200],["2026-04",71500,4780],
-].map(([d,b,g])=>({date:d,btc:b,gold:g,ratio:+(b/g).toFixed(2)}));
-
-async function fetchLivePrices(){
-  const res = await fetch("https://api.anthropic.com/v1/messages",{
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({
-      model:"claude-sonnet-4-20250514",
-      max_tokens:1000,
-      system:"You are a price lookup assistant. Return ONLY a JSON object with no markdown, no backticks, no explanation. Format: {\"btc\":NUMBER,\"gold\":NUMBER} where btc is Bitcoin price in USD and gold is gold price per troy ounce in USD.",
-      messages:[{role:"user",content:"What is the current Bitcoin price in USD and the current gold price per troy ounce in USD right now? Return only JSON."}],
-      tools:[{type:"web_search_20250305",name:"web_search"}]
-    })
-  });
-  const data = await res.json();
-  const text = data.content?.map(i=>i.text||"").join("") || "";
-  const clean = text.replace(/```json|```/g,"").trim();
-  return JSON.parse(clean);
-}
-
-function Chart({data:pts, width, height}){
-  const canvasRef = useRef(null);
-  const [tip, setTip] = useState(null);
-  const pad = {t:20,r:20,b:40,l:56};
-
-  const drawChart = useCallback((cvs, animPct=1)=>{
-    if(!cvs||!pts.length) return;
-    const ctx = cvs.getContext("2d");
-    const dpr = window.devicePixelRatio||1;
-    cvs.width = width*dpr; cvs.height = height*dpr;
-    cvs.style.width = width+"px"; cvs.style.height = height+"px";
-    ctx.setTransform(dpr,0,0,dpr,0,0);
-    ctx.clearRect(0,0,width,height);
-
-    const maxR = Math.max(...pts.map(p=>p.ratio))*1.12;
-    const minR = Math.min(...pts.map(p=>p.ratio))*0.8;
-    const cW = width-pad.l-pad.r, cH = height-pad.t-pad.b;
-    const xStep = cW/(pts.length-1||1);
-    const toX = i=>pad.l+i*xStep;
-    const toY = r=>pad.t+cH-((r-minR)/(maxR-minR))*cH;
-
-    ctx.strokeStyle="rgba(212,168,67,.08)";ctx.lineWidth=1;
-    for(let i=0;i<=5;i++){
-      const v=minR+(maxR-minR)*(i/5), y=toY(v);
-      ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(width-pad.r,y);ctx.stroke();
-      ctx.fillStyle="rgba(122,112,96,.6)";ctx.font="11px sans-serif";ctx.textAlign="right";
-      ctx.fillText(v.toFixed(1),pad.l-10,y+4);
-    }
-    ctx.fillStyle="rgba(122,112,96,.6)";ctx.font="10px sans-serif";ctx.textAlign="center";
-    const le=Math.max(1,Math.floor(pts.length/8));
-    pts.forEach((p,i)=>{if(i%le===0||i===pts.length-1) ctx.fillText(p.date,toX(i),height-pad.b+20)});
-
-    const dc=Math.floor(pts.length*animPct);
-    if(dc<2) return;
-
-    const grad=ctx.createLinearGradient(0,pad.t,0,height-pad.b);
-    grad.addColorStop(0,"rgba(212,168,67,.18)");grad.addColorStop(1,"rgba(212,168,67,0)");
-    ctx.beginPath();ctx.moveTo(toX(0),toY(pts[0].ratio));
-    for(let i=1;i<dc;i++) ctx.lineTo(toX(i),toY(pts[i].ratio));
-    ctx.lineTo(toX(dc-1),height-pad.b);ctx.lineTo(toX(0),height-pad.b);ctx.closePath();
-    ctx.fillStyle=grad;ctx.fill();
-
-    ctx.beginPath();ctx.moveTo(toX(0),toY(pts[0].ratio));
-    for(let i=1;i<dc;i++) ctx.lineTo(toX(i),toY(pts[i].ratio));
-    ctx.strokeStyle="#d4a843";ctx.lineWidth=2.5;ctx.lineJoin="round";ctx.stroke();
-
-    const lx=toX(dc-1),ly=toY(pts[dc-1].ratio);
-    const glow=ctx.createRadialGradient(lx,ly,0,lx,ly,12);
-    glow.addColorStop(0,"rgba(240,215,140,.6)");glow.addColorStop(1,"rgba(212,168,67,0)");
-    ctx.fillStyle=glow;ctx.fillRect(lx-14,ly-14,28,28);
-    ctx.beginPath();ctx.arc(lx,ly,4,0,Math.PI*2);ctx.fillStyle="#f0d78c";ctx.fill();
-  },[pts,width,height]);
-
-  useEffect(()=>{
-    const cvs=canvasRef.current; if(!cvs) return;
-    const dur=1200,start=performance.now();
-    let raf;
-    const frame=(t)=>{
-      const p=Math.min(1,(t-start)/dur), ease=1-Math.pow(1-p,3);
-      drawChart(cvs,ease);
-      if(p<1) raf=requestAnimationFrame(frame);
-    };
-    raf=requestAnimationFrame(frame);
-    return ()=>cancelAnimationFrame(raf);
-  },[drawChart]);
-
-  const onMove = e=>{
-    const rect=canvasRef.current.getBoundingClientRect();
-    const mx=e.clientX-rect.left;
-    const cW=width-pad.l-pad.r;
-    const idx=Math.round(((mx-pad.l)/cW)*(pts.length-1));
-    if(idx<0||idx>=pts.length){setTip(null);return}
-    const pt=pts[idx];
-    setTip({x:e.clientX-rect.left,y:e.clientY-rect.top,pt});
-  };
-
-  return (
-    <div style={{position:"relative"}}>
-      <canvas ref={canvasRef} onMouseMove={onMove} onMouseLeave={()=>setTip(null)} style={{width,height,display:"block",cursor:"crosshair"}}/>
-      {tip && (
-        <div style={{
-          position:"absolute",left:tip.x+(tip.x>width-160?-170:14),top:tip.y-64,
-          background:"rgba(10,10,15,.92)",border:"1px solid rgba(212,168,67,.3)",
-          borderRadius:10,padding:"10px 14px",pointerEvents:"none",
-          backdropFilter:"blur(12px)",whiteSpace:"nowrap",zIndex:10
-        }}>
-          <div style={{color:"#7a7060",fontSize:11}}>{tip.pt.date}</div>
-          <div style={{fontWeight:700,fontSize:18,color:"#f0d78c"}}>{tip.pt.ratio.toFixed(1)} oz Au</div>
-          <div style={{color:"#7a7060",fontSize:11,marginTop:2}}>BTC ${tip.pt.btc.toLocaleString()} · Gold ${tip.pt.gold.toLocaleString()}</div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-export default function App(){
-  const [data, setData] = useState(RAW);
-  const [range, setRange] = useState("all");
-  const [live, setLive] = useState(false);
-  const [lastUpdate, setLastUpdate] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [dims, setDims] = useState({w:800,h:320});
-  const containerRef = useRef(null);
-
-  useEffect(()=>{
-    const measure=()=>{
-      if(containerRef.current){
-        const w=containerRef.current.offsetWidth-40;
-        const h=Math.min(320, window.innerHeight-280);
-        setDims({w,h:Math.max(200,h)});
-      }
-    };
-    measure();
-    window.addEventListener("resize",measure);
-    return ()=>window.removeEventListener("resize",measure);
-  },[]);
-
-  const doFetch = useCallback(async()=>{
-    setLoading(true);
-    try{
-      const {btc,gold} = await fetchLivePrices();
-      if(btc&&gold){
-        const ratio=+(btc/gold).toFixed(2);
-        const now=new Date();
-        const label=now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0");
-        setData(prev=>{
-          const copy=[...prev];
-          copy[copy.length-1]={date:label,btc,gold,ratio};
-          return copy;
-        });
-        setLive(true);
-        setLastUpdate(now);
-      }
-    }catch(e){console.warn("fetch failed",e)}
-    setLoading(false);
-  },[]);
-
-  useEffect(()=>{
-    doFetch();
-    const id=setInterval(doFetch,60000);
-    return ()=>clearInterval(id);
-  },[doFetch]);
-
-  const filtered = range==="all"?data:range==="5y"?data.filter(d=>d.date>="2021-04"):data.filter(d=>d.date>="2023-04");
-  const latest=data[data.length-1];
-  const ath=Math.max(...data.map(d=>d.ratio));
-
-  return (
-    <div style={{
-      minHeight:"auto",background:"#0a0a0f",color:"#e8e0d0",
-      fontFamily:"'Segoe UI',system-ui,sans-serif",position:"relative",overflow:"hidden"
-    }}>
-      {/* Orbs */}
-      <div style={{position:"fixed",width:500,height:500,borderRadius:"50%",background:"rgba(212,168,67,.08)",filter:"blur(120px)",top:-100,right:-100,pointerEvents:"none"}}/>
-      <div style={{position:"fixed",width:600,height:600,borderRadius:"50%",background:"rgba(212,168,67,.05)",filter:"blur(120px)",bottom:-200,left:-150,pointerEvents:"none"}}/>
-
-      <div style={{maxWidth:1100,margin:"0 auto",padding:"16px 24px",position:"relative",zIndex:1}}>
-        {/* Hero */}
-        <div style={{textAlign:"center",padding:"12px 0 8px"}}>
-          <div style={{display:"inline-flex",alignItems:"center",gap:10}}>
-            <span style={{fontSize:10,letterSpacing:3,textTransform:"uppercase",color:"#7a7060"}}>Hard Money Index</span>
-            <h1 style={{
-              fontSize:"clamp(1.4rem,3.5vw,2rem)",fontWeight:900,lineHeight:1.2,
-              background:"linear-gradient(135deg,#f0d78c,#d4a843,#a07c28)",
-              WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"
-            }}>Gold Ounces per Bitcoin</h1>
-            {live&&<span style={{display:"inline-block",width:7,height:7,background:"#4ade80",borderRadius:"50%",boxShadow:"0 0 6px #4ade80"}}/>}
-          </div>
-        </div>
-
-        {/* Stats */}
-        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,margin:"12px 0 14px"}}>
-          {[
-            {label:"Current Ratio",value:latest.ratio.toFixed(1),sub:"oz Au / BTC"},
-            {label:"BTC Price",value:"$"+latest.btc.toLocaleString(),sub:"USD"},
-            {label:"Gold Price",value:"$"+latest.gold.toLocaleString(),sub:"USD / oz"},
-            {label:"All-Time High",value:ath.toFixed(1),sub:"oz Au / BTC"},
-          ].map((s,i)=>(
-            <div key={i} style={{
-              background:"linear-gradient(145deg,rgba(212,168,67,.06),rgba(255,255,255,.02))",
-              border:"1px solid rgba(212,168,67,.12)",borderRadius:12,padding:"14px 10px",textAlign:"center",
-            }}>
-              <div style={{fontSize:9,letterSpacing:2,textTransform:"uppercase",color:"#7a7060",marginBottom:4}}>{s.label}</div>
-              <div style={{fontSize:"1.3rem",fontWeight:700,color:"#f0d78c"}}>{s.value}</div>
-              <div style={{fontSize:10,color:"#7a7060",marginTop:2}}>{s.sub}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* Chart */}
-        <div ref={containerRef} style={{
-          background:"linear-gradient(160deg,rgba(212,168,67,.04),rgba(255,255,255,.01))",
-          border:"1px solid rgba(212,168,67,.1)",borderRadius:16,padding:"16px 20px 10px"
-        }}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:10}}>
-            <div style={{fontSize:"1rem",fontWeight:600,color:"#e8e0d0"}}>
-              Historical Ratio
-              {loading && <span style={{fontSize:11,color:"#7a7060",marginLeft:10,fontWeight:400}}>updating…</span>}
-            </div>
-            <div style={{display:"flex",gap:6}}>
-              {["3y","5y","all"].map(r=>(
-                <button key={r} onClick={()=>setRange(r)} style={{
-                  background:range===r?"rgba(212,168,67,.15)":"transparent",
-                  border:`1px solid ${range===r?"#d4a843":"rgba(212,168,67,.2)"}`,
-                  color:range===r?"#f0d78c":"#7a7060",
-                  padding:"6px 14px",borderRadius:8,fontSize:12,cursor:"pointer",letterSpacing:.5,
-                  fontFamily:"inherit"
-                }}>{r.toUpperCase()}</button>
-              ))}
-            </div>
-          </div>
-          {dims.w>0 && <Chart data={filtered} width={dims.w} height={dims.h}/>}
-        </div>
-
-        <div style={{textAlign:"center",marginTop:10,color:"#7a7060",fontSize:10,letterSpacing:.5}}>
-          Live prices refresh every 60s{lastUpdate && <span> · {lastUpdate.toLocaleTimeString()}</span>}
-        </div>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gold Ounces per Bitcoin</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Sans:wght@300;400;500;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--gold:#d4a843;--gold-light:#f0d78c;--gold-dark:#a07c28;--bg:#0a0a0f;--text:#e8e0d0;--dim:#7a7060}
+body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;overflow:hidden;height:100vh}
+body::after{content:'';position:fixed;inset:0;z-index:9999;pointer-events:none;opacity:.04;
+  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+.orb{position:fixed;border-radius:50%;filter:blur(120px);pointer-events:none}
+.orb-1{width:500px;height:500px;background:rgba(212,168,67,.08);top:-100px;right:-100px}
+.orb-2{width:600px;height:600px;background:rgba(212,168,67,.05);bottom:-200px;left:-150px}
+.container{max-width:1100px;margin:0 auto;padding:14px 24px;position:relative;z-index:1;height:100vh;display:flex;flex-direction:column}
+.hero{text-align:center;padding:10px 0 6px;display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap}
+.hero-tag{font-size:10px;letter-spacing:3px;text-transform:uppercase;color:var(--dim)}
+.hero h1{font-family:'Playfair Display',serif;font-weight:900;font-size:clamp(1.3rem,3.5vw,1.9rem);line-height:1.2;
+  background:linear-gradient(135deg,var(--gold-light),var(--gold),var(--gold-dark));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent}
+#live-dot{display:inline-block;width:7px;height:7px;background:#4ade80;border-radius:50%;box-shadow:0 0 6px #4ade80;opacity:0;transition:opacity .5s}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:10px 0 12px}
+.stat-card{background:linear-gradient(145deg,rgba(212,168,67,.06),rgba(255,255,255,.02));
+  border:1px solid rgba(212,168,67,.12);border-radius:12px;padding:12px 8px;text-align:center}
+.stat-label{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--dim);margin-bottom:3px}
+.stat-value{font-family:'Playfair Display',serif;font-size:1.3rem;font-weight:700;color:var(--gold-light)}
+.stat-sub{font-size:10px;color:var(--dim);margin-top:2px}
+.chart-section{background:linear-gradient(160deg,rgba(212,168,67,.04),rgba(255,255,255,.01));
+  border:1px solid rgba(212,168,67,.1);border-radius:16px;padding:14px 20px 10px;flex:1;display:flex;flex-direction:column;min-height:0}
+.chart-header{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px}
+.chart-title{font-family:'DM Sans',sans-serif;font-size:.95rem;font-weight:600;color:var(--text)}
+.status-msg{font-size:11px;color:var(--dim);margin-left:8px;font-weight:400}
+.chart-controls{display:flex;gap:5px}
+.chart-controls button{background:transparent;border:1px solid rgba(212,168,67,.2);color:var(--dim);
+  padding:5px 12px;border-radius:7px;font-family:'DM Sans',sans-serif;font-size:11px;cursor:pointer;transition:all .25s;letter-spacing:.5px}
+.chart-controls button:hover,.chart-controls button.active{background:rgba(212,168,67,.15);color:var(--gold-light);border-color:var(--gold)}
+.chart-wrap{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center}
+#chart-canvas{width:100%;height:100%;display:block;cursor:crosshair}
+.tooltip{position:absolute;pointer-events:none;background:rgba(10,10,15,.92);border:1px solid rgba(212,168,67,.3);
+  border-radius:10px;padding:10px 14px;font-size:12px;color:var(--text);backdrop-filter:blur(12px);opacity:0;transition:opacity .15s;z-index:10;white-space:nowrap}
+.tooltip .tt-date{color:var(--dim);font-size:10px;margin-bottom:3px}
+.tooltip .tt-val{font-family:'Playfair Display',serif;font-size:1.1rem;color:var(--gold-light)}
+.footer{text-align:center;padding:8px 0 4px;color:var(--dim);font-size:10px;letter-spacing:.5px}
+.footer span{color:var(--gold)}
+.loading-spinner{width:24px;height:24px;border:2px solid rgba(212,168,67,.2);border-top-color:var(--gold);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 10px}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes fadeDown{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.hero,.stats,.chart-section{animation:fadeDown .7s ease both}
+.stats{animation-delay:.15s}.chart-section{animation-delay:.3s}
+@keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
+.loading-text{color:var(--dim);font-size:13px;animation:pulse 1.5s ease-in-out infinite}
+</style>
+</head>
+<body>
+<div class="orb orb-1"></div><div class="orb orb-2"></div>
+<div class="container">
+  <div class="hero">
+    <span class="hero-tag">Hard Money Index</span>
+    <h1>Gold Ounces per Bitcoin</h1>
+    <span id="live-dot"></span>
+  </div>
+  <div class="stats">
+    <div class="stat-card"><div class="stat-label">Current Ratio</div><div class="stat-value" id="stat-ratio">—</div><div class="stat-sub">oz Au / BTC</div></div>
+    <div class="stat-card"><div class="stat-label">BTC Price</div><div class="stat-value" id="stat-btc">—</div><div class="stat-sub">USD</div></div>
+    <div class="stat-card"><div class="stat-label">Gold Price</div><div class="stat-value" id="stat-gold">—</div><div class="stat-sub">USD / oz</div></div>
+    <div class="stat-card"><div class="stat-label">All-Time High</div><div class="stat-value" id="stat-ath">—</div><div class="stat-sub">oz Au / BTC</div></div>
+  </div>
+  <div class="chart-section">
+    <div class="chart-header">
+      <div class="chart-title">Historical Ratio<span class="status-msg" id="status"></span></div>
+      <div class="chart-controls">
+        <button data-range="3y">3Y</button>
+        <button data-range="5y">5Y</button>
+        <button data-range="all" class="active">ALL</button>
       </div>
     </div>
-  );
+    <div class="chart-wrap" id="chart-wrap">
+      <div id="loading-overlay" style="text-align:center">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">Fetching live BTC & gold data…</div>
+      </div>
+      <canvas id="chart-canvas" style="display:none"></canvas>
+      <div class="tooltip" id="tooltip"></div>
+    </div>
+  </div>
+  <div class="footer" id="footer">Powered by Anthropic API + web search · <span>₿</span> + <span>Au</span></div>
+</div>
+<script>
+let data=[], currentData=[], W, H;
+const canvas=document.getElementById('chart-canvas'),ctx=canvas.getContext('2d'),tooltip=document.getElementById('tooltip');
+const pad={t:16,r:16,b:32,l:50};
+
+function updateStats(){
+  if(!data.length) return;
+  const l=data[data.length-1],ath=Math.max(...data.map(d=>d.ratio));
+  document.getElementById('stat-ratio').textContent=l.ratio.toFixed(1);
+  document.getElementById('stat-btc').textContent='$'+l.btc.toLocaleString();
+  document.getElementById('stat-gold').textContent='$'+l.gold.toLocaleString();
+  document.getElementById('stat-ath').textContent=ath.toFixed(1);
 }
+
+// Call Anthropic API with web search
+async function callAPI(systemPrompt, userMsg){
+  const res=await fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      model:'claude-sonnet-4-20250514',max_tokens:4096,
+      system:systemPrompt,
+      messages:[{role:'user',content:userMsg}],
+      tools:[{type:'web_search_20250305',name:'web_search'}]
+    })
+  });
+  const j=await res.json();
+  return (j.content||[]).map(i=>i.text||'').join('');
+}
+
+// Fetch full historical data
+async function fetchHistorical(){
+  document.getElementById('status').textContent='loading historical data…';
+  try{
+    const text=await callAPI(
+      `You are a financial data assistant. Return ONLY a JSON array with no markdown, no backticks, no explanation whatsoever. Each element: [DATE_STRING, BTC_USD, GOLD_USD]. DATE_STRING is "YYYY-MM". BTC_USD is approx Bitcoin price that month. GOLD_USD is approx gold price per troy ounce that month. Include data from January 2020 to today, at quarterly intervals (every 3 months: Jan, Apr, Jul, Oct) plus the current month. Use your best knowledge and web search to get accurate approximate values. Return raw JSON only.`,
+      'Give me quarterly (Jan/Apr/Jul/Oct) historical Bitcoin price and gold price per troy ounce from 2020-01 to present. Include the current month with the latest prices. JSON array only, no other text.'
+    );
+    const clean=text.replace(/```json|```/g,'').trim();
+    const arr=JSON.parse(clean);
+    data=arr.map(([d,b,g])=>({date:d,btc:+b,gold:+g,ratio:+(b/g).toFixed(2)}));
+    if(data.length>0){
+      document.getElementById('loading-overlay').style.display='none';
+      canvas.style.display='block';
+      document.getElementById('live-dot').style.opacity=1;
+      updateStats();
+      applyRange();
+      animateChart(currentData);
+      document.getElementById('status').textContent='';
+      document.getElementById('footer').innerHTML='Live · Data loaded at '+new Date().toLocaleTimeString()+' · <span style="color:#d4a843">₿</span> + <span style="color:#d4a843">Au</span>';
+    }
+  }catch(e){
+    console.error('Historical fetch failed:',e);
+    document.getElementById('status').textContent='retrying…';
+    setTimeout(fetchHistorical,3000);
+  }
+}
+
+// Refresh latest price
+async function fetchLive(){
+  if(!data.length) return;
+  document.getElementById('status').textContent='updating…';
+  try{
+    const text=await callAPI(
+      'Return ONLY a JSON object, no markdown, no backticks. Format: {"btc":NUMBER,"gold":NUMBER} where btc=current Bitcoin price USD, gold=current gold price per troy ounce USD.',
+      'Current Bitcoin price USD and gold price per troy ounce USD right now. JSON only.'
+    );
+    const {btc,gold}=JSON.parse(text.replace(/```json|```/g,'').trim());
+    if(btc&&gold){
+      const ratio=+(btc/gold).toFixed(2),now=new Date();
+      const label=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+      // Update or append current month
+      const lastDate=data[data.length-1].date;
+      if(lastDate===label) data[data.length-1]={date:label,btc,gold,ratio};
+      else data.push({date:label,btc,gold,ratio});
+      updateStats();applyRange();resize();draw(currentData);
+      const el=document.getElementById('stat-ratio');
+      el.style.transition='color .15s';el.style.color='#fff';setTimeout(()=>el.style.color='',400);
+      document.getElementById('footer').innerHTML='Live · '+now.toLocaleTimeString()+' · <span style="color:#d4a843">₿</span> + <span style="color:#d4a843">Au</span>';
+    }
+  }catch(e){console.warn('Live fetch failed:',e)}
+  document.getElementById('status').textContent='';
+}
+
+// Init
+fetchHistorical().then(()=>setInterval(fetchLive,60000));
+
+// --- Chart rendering ---
+function resize(){
+  const dpr=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();
+  W=rect.width;H=rect.height;
+  canvas.width=W*dpr;canvas.height=H*dpr;
+  canvas.style.width=W+'px';canvas.style.height=H+'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+function draw(pts,ap=1){
+  ctx.clearRect(0,0,W,H);if(!pts.length)return;
+  const maxR=Math.max(...pts.map(p=>p.ratio))*1.12,minR=Math.min(...pts.map(p=>p.ratio))*0.8;
+  const cW=W-pad.l-pad.r,cH=H-pad.t-pad.b,xs=cW/(pts.length-1||1);
+  const tx=i=>pad.l+i*xs,ty=r=>pad.t+cH-((r-minR)/(maxR-minR))*cH;
+  ctx.strokeStyle='rgba(212,168,67,.08)';ctx.lineWidth=1;
+  for(let i=0;i<=5;i++){const v=minR+(maxR-minR)*(i/5),y=ty(v);ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(W-pad.r,y);ctx.stroke();
+    ctx.fillStyle='rgba(122,112,96,.6)';ctx.font='11px DM Sans,sans-serif';ctx.textAlign='right';ctx.fillText(v.toFixed(1),pad.l-8,y+4)}
+  ctx.fillStyle='rgba(122,112,96,.6)';ctx.font='10px DM Sans,sans-serif';ctx.textAlign='center';
+  const le=Math.max(1,Math.floor(pts.length/8));
+  pts.forEach((p,i)=>{if(i%le===0||i===pts.length-1)ctx.fillText(p.date,tx(i),H-pad.b+16)});
+  const dc=Math.floor(pts.length*ap);if(dc<2)return;
+  const gr=ctx.createLinearGradient(0,pad.t,0,H-pad.b);gr.addColorStop(0,'rgba(212,168,67,.18)');gr.addColorStop(1,'rgba(212,168,67,0)');
+  ctx.beginPath();ctx.moveTo(tx(0),ty(pts[0].ratio));for(let i=1;i<dc;i++)ctx.lineTo(tx(i),ty(pts[i].ratio));
+  ctx.lineTo(tx(dc-1),H-pad.b);ctx.lineTo(tx(0),H-pad.b);ctx.closePath();ctx.fillStyle=gr;ctx.fill();
+  ctx.beginPath();ctx.moveTo(tx(0),ty(pts[0].ratio));for(let i=1;i<dc;i++)ctx.lineTo(tx(i),ty(pts[i].ratio));
+  ctx.strokeStyle='#d4a843';ctx.lineWidth=2.5;ctx.lineJoin='round';ctx.stroke();
+  const lx=tx(dc-1),ly=ty(pts[dc-1].ratio),gw=ctx.createRadialGradient(lx,ly,0,lx,ly,12);
+  gw.addColorStop(0,'rgba(240,215,140,.6)');gw.addColorStop(1,'rgba(212,168,67,0)');
+  ctx.fillStyle=gw;ctx.fillRect(lx-14,ly-14,28,28);
+  ctx.beginPath();ctx.arc(lx,ly,4,0,Math.PI*2);ctx.fillStyle='#f0d78c';ctx.fill();
+}
+function animateChart(pts){const dur=1000,st=performance.now();(function f(t){const p=Math.min(1,(t-st)/dur);draw(pts,1-Math.pow(1-p,3));if(p<1)requestAnimationFrame(f)})(st)}
+function applyRange(){
+  const r=document.querySelector('.chart-controls button.active')?.dataset.range||'all';
+  const now=new Date();
+  const cutoff3y=(now.getFullYear()-3)+'-'+String(now.getMonth()+1).padStart(2,'0');
+  const cutoff5y=(now.getFullYear()-5)+'-'+String(now.getMonth()+1).padStart(2,'0');
+  currentData=r==='all'?data:r==='5y'?data.filter(d=>d.date>=cutoff5y):data.filter(d=>d.date>=cutoff3y);
+  resize();draw(currentData);
+}
+canvas.addEventListener('mousemove',e=>{
+  const rect=canvas.getBoundingClientRect(),mx=e.clientX-rect.left,cW=W-pad.l-pad.r;
+  const idx=Math.round(((mx-pad.l)/cW)*(currentData.length-1));
+  if(idx<0||idx>=currentData.length){tooltip.style.opacity=0;return}
+  const pt=currentData[idx];
+  tooltip.innerHTML=`<div class="tt-date">${pt.date}</div><div class="tt-val">${pt.ratio.toFixed(1)} oz Au</div><div style="font-size:10px;color:#7a7060;margin-top:2px">BTC $${pt.btc.toLocaleString()} · Gold $${pt.gold.toLocaleString()}</div>`;
+  tooltip.style.opacity=1;let ttx=e.clientX-rect.left+14,tty=e.clientY-rect.top-60;if(ttx+160>W)ttx-=180;
+  tooltip.style.left=ttx+'px';tooltip.style.top=tty+'px';
+});
+canvas.addEventListener('mouseleave',()=>tooltip.style.opacity=0);
+document.querySelectorAll('.chart-controls button').forEach(btn=>btn.addEventListener('click',()=>{
+  document.querySelectorAll('.chart-controls button').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');applyRange();animateChart(currentData);
+}));
+window.addEventListener('resize',()=>{if(data.length){resize();draw(currentData)}});
+</script>
+</body>
+</html>
