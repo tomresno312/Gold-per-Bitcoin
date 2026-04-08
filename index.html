@@ -71,8 +71,8 @@ body::after{content:'';position:fixed;inset:0;z-index:9999;pointer-events:none;o
     <div class="chart-header">
       <div class="chart-title">Historical Ratio<span class="status-msg" id="status"></span></div>
       <div class="chart-controls">
+        <button data-range="1y">1Y</button>
         <button data-range="3y">3Y</button>
-        <button data-range="5y">5Y</button>
         <button data-range="all" class="active">ALL</button>
       </div>
     </div>
@@ -85,95 +85,121 @@ body::after{content:'';position:fixed;inset:0;z-index:9999;pointer-events:none;o
       <div class="tooltip" id="tooltip"></div>
     </div>
   </div>
-  <div class="footer" id="footer">Powered by Anthropic API + web search · <span>₿</span> + <span>Au</span></div>
+  <div class="footer" id="footer">Prices via CoinGecko (BTC + PAXG) · <span>₿</span> + <span>Au</span></div>
 </div>
 <script>
-let data=[], currentData=[], W, H;
+const CG='https://api.coingecko.com/api/v3';
+let data=[],currentData=[],W,H;
 const canvas=document.getElementById('chart-canvas'),ctx=canvas.getContext('2d'),tooltip=document.getElementById('tooltip');
 const pad={t:16,r:16,b:32,l:50};
 
 function updateStats(){
-  if(!data.length) return;
+  if(!data.length)return;
   const l=data[data.length-1],ath=Math.max(...data.map(d=>d.ratio));
   document.getElementById('stat-ratio').textContent=l.ratio.toFixed(1);
-  document.getElementById('stat-btc').textContent='$'+l.btc.toLocaleString();
-  document.getElementById('stat-gold').textContent='$'+l.gold.toLocaleString();
+  document.getElementById('stat-btc').textContent='$'+Math.round(l.btc).toLocaleString();
+  document.getElementById('stat-gold').textContent='$'+Math.round(l.gold).toLocaleString();
   document.getElementById('stat-ath').textContent=ath.toFixed(1);
 }
 
-// Call Anthropic API with web search
-async function callAPI(systemPrompt, userMsg){
-  const res=await fetch('https://api.anthropic.com/v1/messages',{
-    method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({
-      model:'claude-sonnet-4-20250514',max_tokens:4096,
-      system:systemPrompt,
-      messages:[{role:'user',content:userMsg}],
-      tools:[{type:'web_search_20250305',name:'web_search'}]
-    })
-  });
-  const j=await res.json();
-  return (j.content||[]).map(i=>i.text||'').join('');
+// Fetch with retry on 429
+async function cgFetch(url,retries=3){
+  for(let i=0;i<retries;i++){
+    const res=await fetch(url);
+    if(res.ok) return res.json();
+    if(res.status===429){await new Promise(r=>setTimeout(r,5000*(i+1)));continue}
+    throw new Error('CoinGecko '+res.status);
+  }
+  throw new Error('CoinGecko rate limited');
 }
 
-// Fetch full historical data
+// Build historical data from CoinGecko market_chart
 async function fetchHistorical(){
-  document.getElementById('status').textContent='loading historical data…';
+  document.getElementById('status').textContent='loading…';
   try{
-    const text=await callAPI(
-      `You are a financial data assistant. Return ONLY a JSON array with no markdown, no backticks, no explanation whatsoever. Each element: [DATE_STRING, BTC_USD, GOLD_USD]. DATE_STRING is "YYYY-MM". BTC_USD is approx Bitcoin price that month. GOLD_USD is approx gold price per troy ounce that month. Include data from January 2020 to today, at quarterly intervals (every 3 months: Jan, Apr, Jul, Oct) plus the current month. Use your best knowledge and web search to get accurate approximate values. Return raw JSON only.`,
-      'Give me quarterly (Jan/Apr/Jul/Oct) historical Bitcoin price and gold price per troy ounce from 2020-01 to present. Include the current month with the latest prices. JSON array only, no other text.'
-    );
-    const clean=text.replace(/```json|```/g,'').trim();
-    const arr=JSON.parse(clean);
-    data=arr.map(([d,b,g])=>({date:d,btc:+b,gold:+g,ratio:+(b/g).toFixed(2)}));
+    // Days since 2020-01-01
+    const fromTs=Math.floor(new Date('2020-01-01').getTime()/1000);
+    const toTs=Math.floor(Date.now()/1000);
+
+    // Fetch BTC and PAXG (1 PAXG = 1 troy oz gold) historical prices
+    const [btcData,goldData]=await Promise.all([
+      cgFetch(`${CG}/coins/bitcoin/market_chart/range?vs_currency=usd&from=${fromTs}&to=${toTs}`),
+      cgFetch(`${CG}/coins/pax-gold/market_chart/range?vs_currency=usd&from=${fromTs}&to=${toTs}`)
+    ]);
+
+    const btcPrices=btcData.prices; // [[timestamp,price],...]
+    const goldPrices=goldData.prices;
+
+    // Build a gold price lookup map by date string
+    const goldMap=new Map();
+    goldPrices.forEach(([ts,p])=>{
+      const d=new Date(ts);
+      const key=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+      goldMap.set(key,p);
+    });
+
+    // Match BTC prices with closest gold price, sample weekly
+    const merged=[];
+    let lastGold=null;
+    btcPrices.forEach(([ts,btc],i)=>{
+      const d=new Date(ts);
+      const key=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+      const gold=goldMap.get(key);
+      if(gold) lastGold=gold;
+      if(!lastGold) return;
+      // Sample: keep every 7th point for cleaner chart
+      if(i%7!==0 && i!==btcPrices.length-1) return;
+      const label=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+      merged.push({date:key,label,btc,gold:lastGold,ratio:+(btc/lastGold).toFixed(2)});
+    });
+
+    data=merged;
     if(data.length>0){
       document.getElementById('loading-overlay').style.display='none';
       canvas.style.display='block';
       document.getElementById('live-dot').style.opacity=1;
-      updateStats();
-      applyRange();
-      animateChart(currentData);
+      updateStats();applyRange();animateChart(currentData);
       document.getElementById('status').textContent='';
-      document.getElementById('footer').innerHTML='Live · Data loaded at '+new Date().toLocaleTimeString()+' · <span style="color:#d4a843">₿</span> + <span style="color:#d4a843">Au</span>';
+      setFooter();
     }
   }catch(e){
     console.error('Historical fetch failed:',e);
     document.getElementById('status').textContent='retrying…';
-    setTimeout(fetchHistorical,3000);
+    setTimeout(fetchHistorical,6000);
   }
 }
 
-// Refresh latest price
+// Refresh latest price every 60s
 async function fetchLive(){
   if(!data.length) return;
   document.getElementById('status').textContent='updating…';
   try{
-    const text=await callAPI(
-      'Return ONLY a JSON object, no markdown, no backticks. Format: {"btc":NUMBER,"gold":NUMBER} where btc=current Bitcoin price USD, gold=current gold price per troy ounce USD.',
-      'Current Bitcoin price USD and gold price per troy ounce USD right now. JSON only.'
-    );
-    const {btc,gold}=JSON.parse(text.replace(/```json|```/g,'').trim());
+    const j=await cgFetch(`${CG}/simple/price?ids=bitcoin,pax-gold&vs_currencies=usd`);
+    const btc=j.bitcoin?.usd, gold=j['pax-gold']?.usd;
     if(btc&&gold){
-      const ratio=+(btc/gold).toFixed(2),now=new Date();
+      const ratio=+(btc/gold).toFixed(2);
+      const now=new Date();
+      const key=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0');
       const label=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
-      // Update or append current month
-      const lastDate=data[data.length-1].date;
-      if(lastDate===label) data[data.length-1]={date:label,btc,gold,ratio};
-      else data.push({date:label,btc,gold,ratio});
+      const last=data[data.length-1];
+      if(last.date===key) data[data.length-1]={date:key,label,btc,gold,ratio};
+      else data.push({date:key,label,btc,gold,ratio});
       updateStats();applyRange();resize();draw(currentData);
       const el=document.getElementById('stat-ratio');
       el.style.transition='color .15s';el.style.color='#fff';setTimeout(()=>el.style.color='',400);
-      document.getElementById('footer').innerHTML='Live · '+now.toLocaleTimeString()+' · <span style="color:#d4a843">₿</span> + <span style="color:#d4a843">Au</span>';
+      setFooter();
     }
   }catch(e){console.warn('Live fetch failed:',e)}
   document.getElementById('status').textContent='';
 }
 
-// Init
+function setFooter(){
+  document.getElementById('footer').innerHTML='Live · '+new Date().toLocaleTimeString()+' · <span style="color:#d4a843">₿</span> + <span style="color:#d4a843">Au</span>';
+}
+
 fetchHistorical().then(()=>setInterval(fetchLive,60000));
 
-// --- Chart rendering ---
+// --- Chart ---
 function resize(){
   const dpr=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();
   W=rect.width;H=rect.height;
@@ -183,15 +209,15 @@ function resize(){
 }
 function draw(pts,ap=1){
   ctx.clearRect(0,0,W,H);if(!pts.length)return;
-  const maxR=Math.max(...pts.map(p=>p.ratio))*1.12,minR=Math.min(...pts.map(p=>p.ratio))*0.8;
+  const maxR=Math.max(...pts.map(p=>p.ratio))*1.1,minR=Math.min(...pts.map(p=>p.ratio))*0.85;
   const cW=W-pad.l-pad.r,cH=H-pad.t-pad.b,xs=cW/(pts.length-1||1);
   const tx=i=>pad.l+i*xs,ty=r=>pad.t+cH-((r-minR)/(maxR-minR))*cH;
   ctx.strokeStyle='rgba(212,168,67,.08)';ctx.lineWidth=1;
   for(let i=0;i<=5;i++){const v=minR+(maxR-minR)*(i/5),y=ty(v);ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(W-pad.r,y);ctx.stroke();
     ctx.fillStyle='rgba(122,112,96,.6)';ctx.font='11px DM Sans,sans-serif';ctx.textAlign='right';ctx.fillText(v.toFixed(1),pad.l-8,y+4)}
   ctx.fillStyle='rgba(122,112,96,.6)';ctx.font='10px DM Sans,sans-serif';ctx.textAlign='center';
-  const le=Math.max(1,Math.floor(pts.length/8));
-  pts.forEach((p,i)=>{if(i%le===0||i===pts.length-1)ctx.fillText(p.date,tx(i),H-pad.b+16)});
+  const le=Math.max(1,Math.floor(pts.length/10));
+  pts.forEach((p,i)=>{if(i%le===0||i===pts.length-1)ctx.fillText(p.label,tx(i),H-pad.b+16)});
   const dc=Math.floor(pts.length*ap);if(dc<2)return;
   const gr=ctx.createLinearGradient(0,pad.t,0,H-pad.b);gr.addColorStop(0,'rgba(212,168,67,.18)');gr.addColorStop(1,'rgba(212,168,67,0)');
   ctx.beginPath();ctx.moveTo(tx(0),ty(pts[0].ratio));for(let i=1;i<dc;i++)ctx.lineTo(tx(i),ty(pts[i].ratio));
@@ -206,10 +232,13 @@ function draw(pts,ap=1){
 function animateChart(pts){const dur=1000,st=performance.now();(function f(t){const p=Math.min(1,(t-st)/dur);draw(pts,1-Math.pow(1-p,3));if(p<1)requestAnimationFrame(f)})(st)}
 function applyRange(){
   const r=document.querySelector('.chart-controls button.active')?.dataset.range||'all';
-  const now=new Date();
-  const cutoff3y=(now.getFullYear()-3)+'-'+String(now.getMonth()+1).padStart(2,'0');
-  const cutoff5y=(now.getFullYear()-5)+'-'+String(now.getMonth()+1).padStart(2,'0');
-  currentData=r==='all'?data:r==='5y'?data.filter(d=>d.date>=cutoff5y):data.filter(d=>d.date>=cutoff3y);
+  if(r==='all'){currentData=data}
+  else{
+    const yrs=r==='1y'?1:3;
+    const cutoff=new Date();cutoff.setFullYear(cutoff.getFullYear()-yrs);
+    const cutStr=cutoff.toISOString().slice(0,10);
+    currentData=data.filter(d=>d.date>=cutStr);
+  }
   resize();draw(currentData);
 }
 canvas.addEventListener('mousemove',e=>{
@@ -217,7 +246,7 @@ canvas.addEventListener('mousemove',e=>{
   const idx=Math.round(((mx-pad.l)/cW)*(currentData.length-1));
   if(idx<0||idx>=currentData.length){tooltip.style.opacity=0;return}
   const pt=currentData[idx];
-  tooltip.innerHTML=`<div class="tt-date">${pt.date}</div><div class="tt-val">${pt.ratio.toFixed(1)} oz Au</div><div style="font-size:10px;color:#7a7060;margin-top:2px">BTC $${pt.btc.toLocaleString()} · Gold $${pt.gold.toLocaleString()}</div>`;
+  tooltip.innerHTML=`<div class="tt-date">${pt.date}</div><div class="tt-val">${pt.ratio.toFixed(1)} oz Au</div><div style="font-size:10px;color:#7a7060;margin-top:2px">BTC $${Math.round(pt.btc).toLocaleString()} · Gold $${Math.round(pt.gold).toLocaleString()}</div>`;
   tooltip.style.opacity=1;let ttx=e.clientX-rect.left+14,tty=e.clientY-rect.top-60;if(ttx+160>W)ttx-=180;
   tooltip.style.left=ttx+'px';tooltip.style.top=tty+'px';
 });
