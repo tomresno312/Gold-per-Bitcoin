@@ -45,6 +45,7 @@ body::after{content:'';position:fixed;inset:0;z-index:9999;pointer-events:none;o
 .footer{text-align:center;padding:8px 0 4px;color:var(--dim);font-size:10px;letter-spacing:.5px}
 .footer span{color:var(--gold)}
 .loading-spinner{width:24px;height:24px;border:2px solid rgba(212,168,67,.2);border-top-color:var(--gold);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 10px}
+.error-msg{color:#e57373;font-size:13px;margin-top:8px;display:none}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes fadeDown{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
 .hero,.stats,.chart-section{animation:fadeDown .7s ease both}
@@ -80,16 +81,18 @@ body::after{content:'';position:fixed;inset:0;z-index:9999;pointer-events:none;o
       <div id="loading-overlay" style="text-align:center">
         <div class="loading-spinner"></div>
         <div class="loading-text">Fetching live BTC & gold data…</div>
+        <div class="error-msg" id="error-msg"></div>
       </div>
       <canvas id="chart-canvas" style="display:none"></canvas>
       <div class="tooltip" id="tooltip"></div>
     </div>
   </div>
-  <div class="footer" id="footer">Prices via Binance (BTC + PAXG) · <span>₿</span> + <span>Au</span></div>
+  <div class="footer" id="footer">Prices via CryptoCompare (BTC + PAXG) · <span>₿</span> + <span>Au</span></div>
 </div>
 <script>
-const BN='https://api.binance.com/api/v3';
-let data=[],currentData=[],W,H;
+// CryptoCompare min-api — supports CORS from browsers
+const CC='https://min-api.cryptocompare.com/data';
+let data=[],currentData=[],W,H,retryCount=0;
 const canvas=document.getElementById('chart-canvas'),ctx=canvas.getContext('2d'),tooltip=document.getElementById('tooltip');
 const pad={t:16,r:16,b:32,l:50};
 
@@ -102,51 +105,48 @@ function updateStats(){
   document.getElementById('stat-ath').textContent=ath.toFixed(1);
 }
 
-// Binance klines: returns [[openTime,open,high,low,close,vol,closeTime,...],...]
-// We use weekly candles, close price (index 4)
-async function fetchKlines(symbol, startMs){
-  const all=[];
-  let start=startMs;
-  // Binance returns max 1000 candles per call, loop if needed
-  while(true){
-    const url=`${BN}/klines?symbol=${symbol}&interval=1w&startTime=${start}&limit=1000`;
-    const res=await fetch(url);
-    if(!res.ok) throw new Error(`Binance ${res.status} for ${symbol}`);
-    const chunk=await res.json();
-    if(!chunk.length) break;
-    all.push(...chunk);
-    // Next batch starts after last candle's close time
-    start=chunk[chunk.length-1][6]+1;
-    if(chunk.length<1000) break; // no more data
-  }
-  return all;
-}
-
+// Fetch historical daily data from CryptoCompare
+// histoday returns up to 2000 data points; for 2020-now we need ~2300 days
+// So we make 2 calls: first batch ending at a midpoint, second batch to present
 async function fetchHistorical(){
   document.getElementById('status').textContent='loading…';
+  document.getElementById('error-msg').style.display='none';
   try{
-    const startMs=new Date('2020-01-01').getTime();
-    const [btcKlines,goldKlines]=await Promise.all([
-      fetchKlines('BTCUSDT',startMs),
-      fetchKlines('PAXGUSDT',startMs)
+    // Fetch BTC/USD daily — two batches to cover 2020-01 to now
+    const midTs=Math.floor(new Date('2023-06-01').getTime()/1000);
+    const [btc1,btc2,gold1,gold2]=await Promise.all([
+      fetch(`${CC}/v2/histoday?fsym=BTC&tsym=USD&limit=2000&toTs=${midTs}`).then(r=>r.json()),
+      fetch(`${CC}/v2/histoday?fsym=BTC&tsym=USD&limit=2000`).then(r=>r.json()),
+      fetch(`${CC}/v2/histoday?fsym=PAXG&tsym=USD&limit=2000&toTs=${midTs}`).then(r=>r.json()),
+      fetch(`${CC}/v2/histoday?fsym=PAXG&tsym=USD&limit=2000`).then(r=>r.json()),
     ]);
 
-    // Build gold lookup by week open time
+    // Merge and dedupe by timestamp
+    const startTs=new Date('2020-01-01').getTime()/1000;
+    const btcMap=new Map();
     const goldMap=new Map();
-    goldKlines.forEach(k=>goldMap.set(k[0],parseFloat(k[4])));
 
-    // Match and merge
+    const addBtc=arr=>{if(arr?.Data?.Data) arr.Data.Data.forEach(d=>{if(d.time>=startTs && d.close>0) btcMap.set(d.time,d.close)})};
+    const addGold=arr=>{if(arr?.Data?.Data) arr.Data.Data.forEach(d=>{if(d.time>=startTs && d.close>0) goldMap.set(d.time,d.close)})};
+
+    addBtc(btc1);addBtc(btc2);
+    addGold(gold1);addGold(gold2);
+
+    // Sort BTC timestamps, match with gold, sample weekly
+    const btcTimes=[...btcMap.keys()].sort((a,b)=>a-b);
     const merged=[];
     let lastGold=null;
-    btcKlines.forEach(k=>{
-      const ts=k[0];
-      const btc=parseFloat(k[4]); // close price
+
+    btcTimes.forEach((ts,i)=>{
       const g=goldMap.get(ts);
       if(g) lastGold=g;
       if(!lastGold) return;
-      const d=new Date(ts);
-      const date=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-      const label=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+      // Sample every 7 days for cleaner chart
+      if(i%7!==0 && i!==btcTimes.length-1) return;
+      const d=new Date(ts*1000);
+      const date=d.toISOString().slice(0,10);
+      const label=date.slice(0,7);
+      const btc=btcMap.get(ts);
       merged.push({date,label,btc,gold:lastGold,ratio:+(btc/lastGold).toFixed(2)});
     });
 
@@ -158,11 +158,22 @@ async function fetchHistorical(){
       updateStats();applyRange();animateChart(currentData);
       document.getElementById('status').textContent='';
       setFooter();
+      retryCount=0;
+    } else {
+      throw new Error('No data returned');
     }
   }catch(e){
     console.error('Historical fetch failed:',e);
-    document.getElementById('status').textContent='retrying…';
-    setTimeout(fetchHistorical,5000);
+    retryCount++;
+    if(retryCount<=3){
+      document.getElementById('status').textContent='retrying ('+retryCount+'/3)…';
+      setTimeout(fetchHistorical,4000*retryCount);
+    } else {
+      document.getElementById('status').textContent='';
+      const errEl=document.getElementById('error-msg');
+      errEl.textContent='Failed to load data. Check network/ad-blocker and refresh.';
+      errEl.style.display='block';
+    }
   }
 }
 
@@ -171,16 +182,13 @@ async function fetchLive(){
   if(!data.length) return;
   document.getElementById('status').textContent='updating…';
   try{
-    const [btcRes,goldRes]=await Promise.all([
-      fetch(`${BN}/ticker/price?symbol=BTCUSDT`).then(r=>r.json()),
-      fetch(`${BN}/ticker/price?symbol=PAXGUSDT`).then(r=>r.json())
-    ]);
-    const btc=parseFloat(btcRes.price),gold=parseFloat(goldRes.price);
+    const j=await fetch(`${CC}/pricemulti?fsyms=BTC,PAXG&tsyms=USD`).then(r=>r.json());
+    const btc=j.BTC?.USD, gold=j.PAXG?.USD;
     if(btc&&gold){
       const ratio=+(btc/gold).toFixed(2);
       const now=new Date();
-      const date=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0');
-      const label=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+      const date=now.toISOString().slice(0,10);
+      const label=date.slice(0,7);
       const last=data[data.length-1];
       if(last.date===date) data[data.length-1]={date,label,btc,gold,ratio};
       else data.push({date,label,btc,gold,ratio});
