@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Gold Ounces per Bitcoin</title>
+<title>Gold Ounces per Bitcoin!</title>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Sans:wght@300;400;500;700&display=swap" rel="stylesheet">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -63,41 +63,42 @@ body::after{content:'';position:fixed;inset:0;z-index:9999;pointer-events:none;o
     <span id="live-dot"></span>
   </div>
   <div class="stats">
-    <div class="stat-card"><div class="stat-label">Current Ratio</div><div class="stat-value" id="stat-ratio">—</div><div class="stat-sub">oz Au / BTC</div></div>
-    <div class="stat-card"><div class="stat-label">BTC Price</div><div class="stat-value" id="stat-btc">—</div><div class="stat-sub">USD</div></div>
-    <div class="stat-card"><div class="stat-label">Gold Price</div><div class="stat-value" id="stat-gold">—</div><div class="stat-sub">USD / oz</div></div>
-    <div class="stat-card"><div class="stat-label">All-Time High</div><div class="stat-value" id="stat-ath">—</div><div class="stat-sub">oz Au / BTC</div></div>
+    <div class="stat-card"><div class="stat-label">Current Ratio</div><div class="stat-value" id="stat-ratio">â€”</div><div class="stat-sub">oz Au / BTC</div></div>
+    <div class="stat-card"><div class="stat-label">BTC Price</div><div class="stat-value" id="stat-btc">â€”</div><div class="stat-sub">USD</div></div>
+    <div class="stat-card"><div class="stat-label">Gold Price</div><div class="stat-value" id="stat-gold">â€”</div><div class="stat-sub">USD / oz</div></div>
+    <div class="stat-card"><div class="stat-label">All-Time High</div><div class="stat-value" id="stat-ath">â€”</div><div class="stat-sub">oz Au / BTC</div></div>
   </div>
   <div class="chart-section">
     <div class="chart-header">
       <div class="chart-title">Historical Ratio<span class="status-msg" id="status"></span></div>
       <div class="chart-controls">
-        <button data-range="1y">1Y</button>
-        <button data-range="3y">3Y</button>
+        <button data-range="1m">1M</button>
+        <button data-range="3m">3M</button>
         <button data-range="all" class="active">ALL</button>
       </div>
     </div>
     <div class="chart-wrap" id="chart-wrap">
       <div id="loading-overlay" style="text-align:center">
         <div class="loading-spinner"></div>
-        <div class="loading-text">Fetching live BTC & gold data…</div>
+        <div class="loading-text">Fetching live BTC & gold dataâ€¦</div>
         <div class="error-msg" id="error-msg"></div>
       </div>
       <canvas id="chart-canvas" style="display:none"></canvas>
       <div class="tooltip" id="tooltip"></div>
     </div>
   </div>
-  <div class="footer" id="footer">Prices via CryptoCompare (BTC + PAXG) · <span>₿</span> + <span>Au</span></div>
+  <div class="footer" id="footer">Prices via CoinGecko (BTC + Gold) Â· <span>â‚¿</span> + <span>Au</span></div>
 </div>
 <script>
-// CryptoCompare min-api — supports CORS from browsers
-const CC='https://min-api.cryptocompare.com/data';
-let data=[],currentData=[],W,H,retryCount=0;
+// CoinGecko public API â€” no key required, supports CORS from browsers
+const CG='https://api.coingecko.com/api/v3';
+const BTC_ID='bitcoin', GOLD_ID='pax-gold'; // PAX Gold = 1 fine troy ounce, tracks spot gold
+let data=[], currentData=[], W, H, retryCount=0;
 const canvas=document.getElementById('chart-canvas'),ctx=canvas.getContext('2d'),tooltip=document.getElementById('tooltip');
 const pad={t:16,r:16,b:32,l:50};
 
 function updateStats(){
-  if(!data.length)return;
+  if(!data.length) return;
   const l=data[data.length-1],ath=Math.max(...data.map(d=>d.ratio));
   document.getElementById('stat-ratio').textContent=l.ratio.toFixed(1);
   document.getElementById('stat-btc').textContent='$'+Math.round(l.btc).toLocaleString();
@@ -105,49 +106,42 @@ function updateStats(){
   document.getElementById('stat-ath').textContent=ath.toFixed(1);
 }
 
-// Fetch historical daily data from CryptoCompare
-// histoday returns up to 2000 data points; for 2020-now we need ~2300 days
-// So we make 2 calls: first batch ending at a midpoint, second batch to present
+function setFooter(){
+  document.getElementById('footer').innerHTML='Live Â· '+new Date().toLocaleTimeString()+' Â· <span style="color:#d4a843">â‚¿</span> + <span style="color:#d4a843">Au</span>';
+}
+
+// Fetch historical data from CoinGecko (max ~1yr of daily history on the free tier).
 async function fetchHistorical(){
-  document.getElementById('status').textContent='loading…';
+  document.getElementById('status').textContent='loadingâ€¦';
   document.getElementById('error-msg').style.display='none';
   try{
-    // Fetch BTC/USD daily — two batches to cover 2020-01 to now
-    const midTs=Math.floor(new Date('2023-06-01').getTime()/1000);
-    const [btc1,btc2,gold1,gold2]=await Promise.all([
-      fetch(`${CC}/v2/histoday?fsym=BTC&tsym=USD&limit=2000&toTs=${midTs}`).then(r=>r.json()),
-      fetch(`${CC}/v2/histoday?fsym=BTC&tsym=USD&limit=2000`).then(r=>r.json()),
-      fetch(`${CC}/v2/histoday?fsym=PAXG&tsym=USD&limit=2000&toTs=${midTs}`).then(r=>r.json()),
-      fetch(`${CC}/v2/histoday?fsym=PAXG&tsym=USD&limit=2000`).then(r=>r.json()),
+    const [btcRes,goldRes]=await Promise.all([
+      fetch(`${CG}/coins/${BTC_ID}/market_chart?vs_currency=usd&days=365`).then(r=>r.json()),
+      fetch(`${CG}/coins/${GOLD_ID}/market_chart?vs_currency=usd&days=365`).then(r=>r.json()),
     ]);
 
-    // Merge and dedupe by timestamp
-    const startTs=new Date('2020-01-01').getTime()/1000;
-    const btcMap=new Map();
-    const goldMap=new Map();
+    // CoinGecko returns { prices:[[ts_ms, price], ...] }. Granularity may be intraday and the
+    // two series' timestamps don't align, so collapse each to one close per UTC day before merging.
+    const toDaily=res=>{
+      const m=new Map();
+      (res?.prices||[]).forEach(([ts,p])=>{if(p>0) m.set(new Date(ts).toISOString().slice(0,10),p)});
+      return m; // last sample of each day wins
+    };
+    const btcMap=toDaily(btcRes), goldMap=toDaily(goldRes);
 
-    const addBtc=arr=>{if(arr?.Data?.Data) arr.Data.Data.forEach(d=>{if(d.time>=startTs && d.close>0) btcMap.set(d.time,d.close)})};
-    const addGold=arr=>{if(arr?.Data?.Data) arr.Data.Data.forEach(d=>{if(d.time>=startTs && d.close>0) goldMap.set(d.time,d.close)})};
+    if(btcMap.size===0||goldMap.size===0) throw new Error('No price data returned');
 
-    addBtc(btc1);addBtc(btc2);
-    addGold(gold1);addGold(gold2);
-
-    // Sort BTC timestamps, match with gold, sample weekly
-    const btcTimes=[...btcMap.keys()].sort((a,b)=>a-b);
+    // Union of all days (ISO date strings sort chronologically); carry prices forward across gaps.
+    const allDays=[...new Set([...btcMap.keys(),...goldMap.keys()])].sort();
     const merged=[];
-    let lastGold=null;
-
-    btcTimes.forEach((ts,i)=>{
-      const g=goldMap.get(ts);
-      if(g) lastGold=g;
-      if(!lastGold) return;
-      // Sample every 7 days for cleaner chart
-      if(i%7!==0 && i!==btcTimes.length-1) return;
-      const d=new Date(ts*1000);
-      const date=d.toISOString().slice(0,10);
-      const label=date.slice(0,7);
-      const btc=btcMap.get(ts);
-      merged.push({date,label,btc,gold:lastGold,ratio:+(btc/lastGold).toFixed(2)});
+    let lastBtc=null,lastGold=null;
+    allDays.forEach((date,i)=>{
+      if(btcMap.has(date)) lastBtc=btcMap.get(date);
+      if(goldMap.has(date)) lastGold=goldMap.get(date);
+      if(!lastBtc||!lastGold) return;
+      // Sample every 3 days for clean chart density
+      if(i%3!==0 && i!==allDays.length-1) return;
+      merged.push({date,label:date.slice(5),btc:lastBtc,gold:lastGold,ratio:+(lastBtc/lastGold).toFixed(2)});
     });
 
     data=merged;
@@ -166,12 +160,12 @@ async function fetchHistorical(){
     console.error('Historical fetch failed:',e);
     retryCount++;
     if(retryCount<=3){
-      document.getElementById('status').textContent='retrying ('+retryCount+'/3)…';
+      document.getElementById('status').textContent='retrying ('+retryCount+'/3)â€¦';
       setTimeout(fetchHistorical,4000*retryCount);
     } else {
       document.getElementById('status').textContent='';
       const errEl=document.getElementById('error-msg');
-      errEl.textContent='Failed to load data. Check network/ad-blocker and refresh.';
+      errEl.textContent='Failed to load data â€” CoinGecko may be rate-limiting the free tier. Wait a moment and refresh, or check network/ad-blocker.';
       errEl.style.display='block';
     }
   }
@@ -180,15 +174,15 @@ async function fetchHistorical(){
 // Live price refresh every 60s
 async function fetchLive(){
   if(!data.length) return;
-  document.getElementById('status').textContent='updating…';
+  document.getElementById('status').textContent='updatingâ€¦';
   try{
-    const j=await fetch(`${CC}/pricemulti?fsyms=BTC,PAXG&tsyms=USD`).then(r=>r.json());
-    const btc=j.BTC?.USD, gold=j.PAXG?.USD;
+    const j=await fetch(`${CG}/simple/price?ids=${BTC_ID},${GOLD_ID}&vs_currencies=usd`).then(r=>r.json());
+    const btc=j[BTC_ID]?.usd, gold=j[GOLD_ID]?.usd;
     if(btc&&gold){
       const ratio=+(btc/gold).toFixed(2);
       const now=new Date();
       const date=now.toISOString().slice(0,10);
-      const label=date.slice(0,7);
+      const label=date.slice(5);
       const last=data[data.length-1];
       if(last.date===date) data[data.length-1]={date,label,btc,gold,ratio};
       else data.push({date,label,btc,gold,ratio});
@@ -201,13 +195,10 @@ async function fetchLive(){
   document.getElementById('status').textContent='';
 }
 
-function setFooter(){
-  document.getElementById('footer').innerHTML='Live · '+new Date().toLocaleTimeString()+' · <span style="color:#d4a843">₿</span> + <span style="color:#d4a843">Au</span>';
-}
-
+// Init
 fetchHistorical().then(()=>{fetchLive();setInterval(fetchLive,60000)});
 
-// --- Chart ---
+// --- Chart rendering ---
 function resize(){
   const dpr=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();
   W=rect.width;H=rect.height;
@@ -217,14 +208,14 @@ function resize(){
 }
 function draw(pts,ap=1){
   ctx.clearRect(0,0,W,H);if(!pts.length)return;
-  const maxR=Math.max(...pts.map(p=>p.ratio))*1.1,minR=Math.min(...pts.map(p=>p.ratio))*0.85;
+  const maxR=Math.max(...pts.map(p=>p.ratio))*1.12,minR=Math.min(...pts.map(p=>p.ratio))*0.8;
   const cW=W-pad.l-pad.r,cH=H-pad.t-pad.b,xs=cW/(pts.length-1||1);
   const tx=i=>pad.l+i*xs,ty=r=>pad.t+cH-((r-minR)/(maxR-minR))*cH;
   ctx.strokeStyle='rgba(212,168,67,.08)';ctx.lineWidth=1;
   for(let i=0;i<=5;i++){const v=minR+(maxR-minR)*(i/5),y=ty(v);ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(W-pad.r,y);ctx.stroke();
     ctx.fillStyle='rgba(122,112,96,.6)';ctx.font='11px DM Sans,sans-serif';ctx.textAlign='right';ctx.fillText(v.toFixed(1),pad.l-8,y+4)}
   ctx.fillStyle='rgba(122,112,96,.6)';ctx.font='10px DM Sans,sans-serif';ctx.textAlign='center';
-  const le=Math.max(1,Math.floor(pts.length/10));
+  const le=Math.max(1,Math.floor(pts.length/8));
   pts.forEach((p,i)=>{if(i%le===0||i===pts.length-1)ctx.fillText(p.label,tx(i),H-pad.b+16)});
   const dc=Math.floor(pts.length*ap);if(dc<2)return;
   const gr=ctx.createLinearGradient(0,pad.t,0,H-pad.b);gr.addColorStop(0,'rgba(212,168,67,.18)');gr.addColorStop(1,'rgba(212,168,67,0)');
@@ -242,8 +233,8 @@ function applyRange(){
   const r=document.querySelector('.chart-controls button.active')?.dataset.range||'all';
   if(r==='all'){currentData=data}
   else{
-    const yrs=r==='1y'?1:3;
-    const cutoff=new Date();cutoff.setFullYear(cutoff.getFullYear()-yrs);
+    const months=r==='1m'?1:3;
+    const cutoff=new Date();cutoff.setMonth(cutoff.getMonth()-months);
     const cutStr=cutoff.toISOString().slice(0,10);
     currentData=data.filter(d=>d.date>=cutStr);
   }
@@ -254,7 +245,7 @@ canvas.addEventListener('mousemove',e=>{
   const idx=Math.round(((mx-pad.l)/cW)*(currentData.length-1));
   if(idx<0||idx>=currentData.length){tooltip.style.opacity=0;return}
   const pt=currentData[idx];
-  tooltip.innerHTML=`<div class="tt-date">${pt.date}</div><div class="tt-val">${pt.ratio.toFixed(1)} oz Au</div><div style="font-size:10px;color:#7a7060;margin-top:2px">BTC $${Math.round(pt.btc).toLocaleString()} · Gold $${Math.round(pt.gold).toLocaleString()}</div>`;
+  tooltip.innerHTML=`<div class="tt-date">${pt.date}</div><div class="tt-val">${pt.ratio.toFixed(1)} oz Au</div><div style="font-size:10px;color:#7a7060;margin-top:2px">BTC $${Math.round(pt.btc).toLocaleString()} Â· Gold $${Math.round(pt.gold).toLocaleString()}</div>`;
   tooltip.style.opacity=1;let ttx=e.clientX-rect.left+14,tty=e.clientY-rect.top-60;if(ttx+160>W)ttx-=180;
   tooltip.style.left=ttx+'px';tooltip.style.top=tty+'px';
 });
